@@ -1,0 +1,93 @@
+pipeline {
+    agent any
+    tools{
+        jdk 'jdk11'
+        maven 'maven3'
+    }
+    
+    environment {
+        SCANNER_HOME=tool 'sonar-scanner'
+    }
+
+
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+        
+        stage('Checkout'){
+            steps {
+                git 'https://github.com/Ganeshbayya/Petclinic.git'
+            }
+        }
+        
+        stage('MVN Compile'){
+            steps {
+                sh 'mvn clean compile'
+            }
+        }
+        
+        stage("Sonarqube Analysis "){
+            steps{
+                withSonarQubeEnv('sonar-server') {
+                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Petclinic \
+                    -Dsonar.java.binaries=. \
+                    -Dsonar.projectKey=Petclinic '''
+                }
+            }
+        }
+        
+        stage('MVN Test'){
+            steps {
+                sh 'mvn test'
+            }
+        }
+        
+        stage("Quality Gate"){
+            steps {
+                script {
+                  waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token' 
+                }
+           }
+        }
+        
+        stage("OWASP Dependency Check"){
+            steps{
+                dependencyCheck additionalArguments: '--scan ./ --format XML ', odcInstallation: 'dp'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
+        }
+        
+        stage('Build War file'){
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+        
+        stage('Build & Push to Docker Hub'){
+            steps {
+                script{
+                    withDockerRegistry(credentialsId: 'docker1', toolName: 'docker') {
+                        sh "docker build -t petclinic-image -f Dockerfile ."
+                        sh "docker tag petclinic-image ganeshbayya/petclinic-image:latest"
+                        sh "docker push ganeshbayya/petclinic-image:latest"
+                    }
+                }
+            }
+        }
+        
+        stage("TRIVY"){
+            steps{
+                sh "trivy image ganeshbayya/petclinic-image:latest > trivy.txt"
+            }
+        }
+        
+        stage("Deploye to Container"){
+            steps{
+                deploy adapters: [tomcat9(credentialsId: 'cat', path: '', url: 'http://54.219.16.19:8080/')], contextPath: 'Petclinic', war: '**/*.war'
+            }
+        }
+    }
+}
